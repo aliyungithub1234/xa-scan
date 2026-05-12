@@ -27,7 +27,7 @@ on:
       parallel:
         description: '并行扫描数量（默认 3，最多 5）'
         required: false
-        default: '3'
+        default: '5'
       shuffle:
         description: '随机打乱目标顺序（默认 true）'
         required: false
@@ -227,17 +227,23 @@ jobs:
         if: always()
         run: |
           IDX="${{ strategy.job-index }}"
-          mkdir -p "scan-results/${IDX}/artifacts"
-          find . -maxdepth 1 -name "*.html" -exec cp {} "scan-results/${IDX}/artifacts/" \; 2>/dev/null || true
-          find . -maxdepth 1 -name "*.json" -exec cp {} "scan-results/${IDX}/artifacts/" \; 2>/dev/null || true
-          find . -maxdepth 1 -name "*.md" -exec cp {} "scan-results/${IDX}/artifacts/" \; 2>/dev/null || true
+          TARGET="${{ matrix.target }}"
+          mkdir -p "scan-results/${IDX}"
+          # Save target info for identification
+          echo "target: ${TARGET}" > "scan-results/${IDX}/target-info.txt"
+          echo "timestamp: $(date -Iseconds)" >> "scan-results/${IDX}/target-info.txt"
+          # Copy any result files generated in repo root
+          for ext in html json md txt log; do
+            find . -maxdepth 1 -name "*.${ext}" -exec cp {} "scan-results/${IDX}/" \; 2>/dev/null || true
+          done
           find "scan-results/${IDX}" -type f -size +50M -delete 2>/dev/null || true
+          echo "Collected $(find scan-results/${IDX} -type f | wc -l) files"
 
       - name: Upload Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scan-target-${{ strategy.job-index }}-${{ matrix.target }}
+          name: scan-target-${{ strategy.job-index }}
           path: scan-results/${{ strategy.job-index }}/
           retention-days: 14
           if-no-files-found: ignore
