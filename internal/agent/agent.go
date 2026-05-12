@@ -1197,7 +1197,7 @@ func (a *Agent) buildSystemPrompt(targets []string, instruction string) string {
 - RULE 11: For RCE/file upload proof: upload ONLY harmless TEXT files (1.txt, 1.php with echo "poc", etc.). NEVER upload: reverse shells, msfvenom payloads, binary executables, .exe, malware.
 - RULE 12: IGNORE and do NOT report low-value vulnerabilities: URL redirect, self-XSS, weak password, email bombing, arbitrary registration without verification, robots.txt, missing headers alone, version disclosure alone, public files/directories that appear intentional.
 - Use safe proof methods: time-based blind SQLi, reflected XSS with alert(), SSRF with callback, IDOR with limited data access.
-- If you gain shell access: create a text file as proof (e.g., `echo "poc" > /tmp/1.txt`), then STOP. Do NOT explore further, download files, or move laterally.
+- If you gain shell access: create a text file as proof (e.g., echo "poc" > /tmp/1.txt), then STOP. Do NOT explore further, download files, or move laterally.
 
 ### Parameter & URL Testing Rules  
 7. Test EVERY input parameter you discover: URL params, form fields, headers, cookies, JSON bodies, XML attributes.
