@@ -11,7 +11,7 @@ on:
           3. 文件路径: targets.txt（仓库根目录下的文件，每行一个目标）
           4. URL下载列表: https://raw.githubusercontent.com/.../targets.txt
         required: true
-        default: 'targets.txt'
+        default: 'https://example.com'
       instruction:
         description: '自定义扫描指令（可选）'
         required: false
@@ -23,7 +23,7 @@ on:
       max_iterations:
         description: '每个目标最大迭代次数（默认 80）'
         required: false
-        default: '100'
+        default: '80'
       parallel:
         description: '并行扫描数量（默认 3，最多 5）'
         required: false
@@ -35,7 +35,7 @@ on:
       timeout:
         description: '每个目标超时分钟（默认 90）'
         required: false
-        default: '180'
+        default: '90'
 
 defaults:
   run:
@@ -187,20 +187,66 @@ jobs:
 
       - name: Install Dependencies
         run: |
+          echo "========================================"
+          echo "  安装系统依赖"
+          echo "========================================"
           sudo apt-get update -qq
-          sudo apt-get install -y -qq nmap ncat curl wget whois dnsutils jq 2>&1 | tail -3
+          sudo apt-get install -y -qq nmap ncat curl wget whois dnsutils jq tree
+          echo "✅ 系统依赖安装完成"
+          echo ""
 
-          go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest 2>/dev/null || true
-          go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest 2>/dev/null || true
-          go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest 2>/dev/null || true
-          go install -v github.com/ffuf/ffuf/v2@latest 2>/dev/null || true
+          echo "========================================"
+          echo "  安装 Go 安全工具"
+          echo "========================================"
+          export PATH=$(go env GOPATH)/bin:$PATH
+          export GOTOOLCHAIN=local
 
-          nuclei -ut 2>/dev/null || true
+          install_tool() {
+            name=$(basename "$1" | cut -d@ -f1)
+            echo -n "  📦 $name ... "
+            if go install -v "$1" 2>/tmp/install_${name}.log; then
+              echo "✅"
+              return 0
+            else
+              echo "⚠️  失败 (跳过)"
+              cat /tmp/install_${name}.log 2>/dev/null | tail -3
+              return 1
+            fi
+          }
+
+          install_tool "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+          install_tool "github.com/projectdiscovery/httpx/cmd/httpx@latest"
+          install_tool "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
+          install_tool "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"
+          install_tool "github.com/ffuf/ffuf/v2@latest"
+
+          echo ""
+          echo "✅ Go 工具安装完成"
+          echo ""
+
+          echo "========================================"
+          echo "  PATH 配置"
+          echo "========================================"
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+          echo "GOPATH: $(go env GOPATH)"
+          echo "Go version: $(go version)"
+          echo "PATH contains GOPATH/bin: $(echo $PATH | grep -c 'go/bin')"
+          echo ""
+
+          echo "========================================"
+          echo "  已安装工具清单"
+          echo "========================================"
+          for tool in subfinder httpx nuclei naabu ffuf nmap curl wget jq; do
+            if command -v "$tool" &>/dev/null; then
+              ver=$($tool --version 2>&1 | head -1 || echo "?")
+              echo "  ✅ $tool: $ver"
+            else
+              echo "  ❌ $tool: 未找到"
+            fi
+          done
 
       - name: Build Xalgorix
         run: |
-          cd xalgorix
           go mod tidy
           go build -buildvcs=false -o xalgorix ./cmd/xalgorix
           chmod +x xalgorix
