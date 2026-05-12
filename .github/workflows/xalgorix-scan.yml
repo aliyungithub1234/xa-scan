@@ -173,7 +173,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: 'stable'
           cache: true
 
       - name: Verify Secrets
@@ -215,6 +215,7 @@ jobs:
           }
 
           install_tool "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+          install_tool "github.com/projectdiscovery/httpx/cmd/httpx@latest"
           install_tool "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
           install_tool "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"
           install_tool "github.com/ffuf/ffuf/v2@latest"
