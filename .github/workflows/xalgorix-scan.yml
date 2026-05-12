@@ -11,7 +11,7 @@ on:
           3. 文件路径: targets.txt（仓库根目录下的文件，每行一个目标）
           4. URL下载列表: https://raw.githubusercontent.com/.../targets.txt
         required: true
-        default: 'https://example.com'
+        default: 'targets.txt'
       instruction:
         description: '自定义扫描指令（可选）'
         required: false
@@ -275,7 +275,6 @@ jobs:
           [ -n "$INSTRUCTION" ] && echo "📝 自定义:   $INSTRUCTION"
           echo ""
 
-          cd xalgorix
           mkdir -p "scan-results/${JOB_IDX}"
 
           # 构建参数
