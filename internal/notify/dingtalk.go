@@ -231,62 +231,49 @@ func buildMarkdownMessage(v VulnInfo) map[string]interface{} {
 		severityNote = fmt.Sprintf(" (原评级: %s)", strings.ToUpper(v.OriginalSeverity))
 	}
 
-	text := fmt.Sprintf(`## %s 新漏洞发现: [%s] %s
+	// Build markdown text. Go raw string literals (`) cannot contain backticks,
+	// so lines with markdown code formatting (e.g. `XALG-001`) are split into
+	// concatenated regular strings.
+	rowVulnID := "| **漏洞 ID** | `" + v.ID + "` |"
+	rowEndpoint := "| **接口** | `" + endpointDisplay + "` " + methodDisplay + " |"
 
----
-
-### 📋 漏洞概要
-
-| 项目 | 详情 |
-|------|------|
-| **漏洞 ID** | `%s` |
-| **严重程度** | <font color="%s">**%s%s**</font> %s |
-| **CVSS 评分** | %.1f |
-| **目标** | %s |
-| **接口** | `%s` %s |
-| **验证方式** | %s |
-| **发现时间** | %s |
-| **扫描引擎** | %s |
-
----
-
-### 📝 漏洞描述
-
-%s
-
----
-
-### 💥 影响分析
-
-%s
-
----
-
-### 🔍 利用证明
-
-`+"```"+`
-%s
-`+"```"+`
-
----
-
-### 🛡️ 修复建议
-
-%s
-
----
-
-> ⚠️ **安全声明**: 本漏洞已按道德渗透测试规范验证，测试过程中未对目标系统造成任何破坏。
-> 
-> 📊 **数据限制**: 敏感信息读取不超过 5 条记录，符合安全测试政策。
-`,
+	text := fmt.Sprintf("## %s 新漏洞发现: [%s] %s\n\n"+
+		"---\n\n"+
+		"### 📋 漏洞概要\n\n"+
+		"| 项目 | 详情 |\n"+
+		"|------|------|\n"+
+		"%s\n"+
+		"| **严重程度** | <font color=\"%s\">**%s%s**</font> %s |\n"+
+		"| **CVSS 评分** | %.1f |\n"+
+		"| **目标** | %s |\n"+
+		"%s\n"+
+		"| **验证方式** | %s |\n"+
+		"| **发现时间** | %s |\n"+
+		"| **扫描引擎** | %s |\n\n"+
+		"---\n\n"+
+		"### 📝 漏洞描述\n\n"+
+		"%s\n\n"+
+		"---\n\n"+
+		"### 💥 影响分析\n\n"+
+		"%s\n\n"+
+		"---\n\n"+
+		"### 🔍 利用证明\n\n"+
+		"```\n"+
+		"%s\n"+
+		"```\n\n"+
+		"---\n\n"+
+		"### 🛡️ 修复建议\n\n"+
+		"%s\n\n"+
+		"---\n\n"+
+		"> ⚠️ **安全声明**: 本漏洞已按道德渗透测试规范验证，测试过程中未对目标系统造成任何破坏。\n"+
+		"> \n"+
+		"> 📊 **数据限制**: 敏感信息读取不超过 5 条记录，符合安全测试政策。\n",
 		emoji, sevUpper, v.Title,
-		color, sevUpper, severityNote, emoji,
-		v.ID,
+		rowVulnID,
 		color, sevUpper, severityNote, emoji,
 		v.CVSS,
 		v.Target,
-		endpointDisplay, methodDisplay,
+		rowEndpoint,
 		verifyDisplay,
 		v.Timestamp,
 		v.AgentName,
