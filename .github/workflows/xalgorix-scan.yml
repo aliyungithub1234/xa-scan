@@ -215,7 +215,6 @@ jobs:
           }
 
           install_tool "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
-          install_tool "github.com/projectdiscovery/httpx/cmd/httpx@latest"
           install_tool "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
           install_tool "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"
           install_tool "github.com/ffuf/ffuf/v2@latest"
@@ -299,7 +298,6 @@ jobs:
       - name: Collect Results
         if: always()
         run: |
-          cd xalgorix
           IDX="${{ strategy.job-index }}"
           mkdir -p "scan-results/${IDX}/artifacts"
 
