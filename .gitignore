@@ -1,0 +1,46 @@
+# Binaries
+/xalgorix
+xalgorix-linux-amd64
+antigravity-kit
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Scan output / data
+*.txt
+*.json
+!go.sum
+!package.json
+!internal/web/static/.eslintrc.json
+xalgorix-data/
+*_assessment/
+
+# AI agent config (local only)
+.agent/
+CLAUDE.md
+ralph
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+*.test
+*.out
+__debug_bin*
+
+# Temp
+tmp/
+*.log
+nohup.out
+gospider/

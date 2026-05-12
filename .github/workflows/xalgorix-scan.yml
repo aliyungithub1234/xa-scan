@@ -1,0 +1,331 @@
+name: xalgorix-scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: >
+          扫描目标（支持4种格式）：
+          1. 单目标: https://example.com
+          2. 多目标（逗号分隔）: https://a.com, https://b.com
+          3. 文件路径: targets.txt（仓库根目录下的文件，每行一个目标）
+          4. URL下载列表: https://raw.githubusercontent.com/.../targets.txt
+        required: true
+        default: 'targets.txt'
+      instruction:
+        description: '自定义扫描指令（可选）'
+        required: false
+        default: ''
+      model:
+        description: 'Kimi 模型（默认 kimi/kimi-for-coding）'
+        required: false
+        default: 'kimi/kimi-for-coding'
+      max_iterations:
+        description: '每个目标最大迭代次数（默认 80）'
+        required: false
+        default: '100'
+      parallel:
+        description: '并行扫描数量（默认 3，最多 5）'
+        required: false
+        default: '3'
+      shuffle:
+        description: '随机打乱目标顺序（默认 true）'
+        required: false
+        default: 'true'
+      timeout:
+        description: '每个目标超时分钟（默认 90）'
+        required: false
+        default: '180'
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  XALGORIX_DING_WEBHOOK: ${{ secrets.DING_WEBHOOK }}
+  XALGORIX_DING_SECRET: ${{ secrets.DING_SECRET }}
+  XALGORIX_LLM: ${{ github.event.inputs.model }}
+  XALGORIX_API_KEY: ${{ secrets.KIMI_API_KEY }}
+  XALGORIX_API_BASE: 'https://api.kimi.com/coding/v1'
+  XALGORIX_GUARD_MODE: ${{ secrets.XALGORIX_GUARD_MODE || 'strict' }}
+
+jobs:
+  # ═══════════════════════════════════════════════════
+  # Job 1: 解析目标列表（去重、打乱、生成矩阵）
+  # ═══════════════════════════════════════════════════
+  prepare:
+    name: '🔍 解析目标列表'
+    runs-on: ubuntu-latest
+    outputs:
+      targets_json: ${{ steps.parse.outputs.targets_json }}
+      total: ${{ steps.parse.outputs.total }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Parse Targets
+        id: parse
+        run: |
+          INPUT='${{ github.event.inputs.target }}'
+          SHUFFLE='${{ github.event.inputs.shuffle }}'
+          TMP_FILE="/tmp/targets_raw.txt"
+
+          echo "========================================"
+          echo "  目标解析"
+          echo "========================================"
+          echo "原始输入: $INPUT"
+          echo ""
+
+          # ── 模式1: URL 下载目标列表 ──
+          if echo "$INPUT" | grep -qiE '^https?://.*\.(txt|list|csv)$'; then
+            echo "📥 检测到远程列表 URL，下载中..."
+            curl -sL "$INPUT" -o "$TMP_FILE" 2>/dev/null
+            if [ -s "$TMP_FILE" ]; then
+              echo "✅ 下载成功"
+            else
+              echo "❌ 下载失败，尝试作为单目标处理"
+              echo "$INPUT" > "$TMP_FILE"
+            fi
+
+          # ── 模式2: 本地文件 ──
+          elif echo "$INPUT" | grep -qiE '\.(txt|list|csv)$'; then
+            FILE="$(echo "$INPUT" | tr -d ' ')"
+            if [ -f "$FILE" ]; then
+              echo "📄 读取本地文件: $FILE"
+              cp "$FILE" "$TMP_FILE"
+            else
+              echo "❌ 文件不存在: $FILE"
+              echo "$INPUT" > "$TMP_FILE"
+            fi
+
+          # ── 模式3: 逗号分隔的多目标 ──
+          elif echo "$INPUT" | grep -q ','; then
+            echo "📝 解析逗号分隔的目标列表"
+            echo "$INPUT" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > "$TMP_FILE"
+
+          # ── 模式4: 单目标 ──
+          else
+            echo "🎯 单目标模式"
+            echo "$INPUT" > "$TMP_FILE"
+          fi
+
+          # ── 清洗: 去重、去空行、过滤注释 ──
+          CLEAN_FILE="/tmp/targets_clean.txt"
+          grep -vE '^[[:space:]]*$|^[[:space:]]*#' "$TMP_FILE" | \
+            sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
+            sort -u > "$CLEAN_FILE"
+
+          TOTAL=$(wc -l < "$CLEAN_FILE")
+          echo ""
+          echo "📊 解析结果: 共 $TOTAL 个唯一目标"
+          echo ""
+
+          # ── 可选: 随机打乱 ──
+          if [ "$SHUFFLE" = "true" ]; then
+            shuf "$CLEAN_FILE" > /tmp/targets_shuffled.txt
+            mv /tmp/targets_shuffled.txt "$CLEAN_FILE"
+            echo "🎲 已随机打乱顺序"
+          fi
+
+          # ── 显示目标列表 ──
+          echo "目标清单:"
+          nl -w2 -s'. ' "$CLEAN_FILE" | head -20
+          if [ "$TOTAL" -gt 20 ]; then
+            echo "  ... 及另外 $((TOTAL - 20)) 个目标"
+          fi
+          echo ""
+
+          # ── 输出 JSON 矩阵 ──
+          JSON=$(cat "$CLEAN_FILE" | jq -R . | jq -s . | tr -d '\n')
+          echo "targets_json=$JSON" >> $GITHUB_OUTPUT
+          echo "total=$TOTAL" >> $GITHUB_OUTPUT
+
+          # 保存供后续下载
+          cp "$CLEAN_FILE" $GITHUB_WORKSPACE/targets_parsed.txt
+
+      - name: Upload Target List
+        uses: actions/upload-artifact@v4
+        with:
+          name: targets-list-${{ github.run_number }}
+          path: targets_parsed.txt
+
+  # ═══════════════════════════════════════════════════
+  # Job 2: 矩阵并行扫描（每个目标一个独立 job）
+  # ═══════════════════════════════════════════════════
+  scan:
+    name: '🔥 扫描: ${{ matrix.target }}'
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(github.event.inputs.timeout) }}
+
+    # 矩阵策略: 每个目标一个独立 job，max-parallel 控制并发数
+    strategy:
+      fail-fast: false  # 一个目标失败不影响其他目标
+      max-parallel: ${{ fromJSON(github.event.inputs.parallel) }}
+      matrix:
+        target: ${{ fromJSON(needs.prepare.outputs.targets_json) }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Verify Secrets
+        run: |
+          if [ -z "$XALGORIX_API_KEY" ]; then
+            echo "❌ Error: KIMI_API_KEY secret 未设置!"
+            echo "   请在 Settings → Secrets → Actions 中添加"
+            exit 1
+          fi
+          echo "✅ Kimi API Key: 已配置"
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nmap ncat curl wget whois dnsutils jq 2>&1 | tail -3
+
+          go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest 2>/dev/null || true
+          go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest 2>/dev/null || true
+          go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest 2>/dev/null || true
+          go install -v github.com/ffuf/ffuf/v2@latest 2>/dev/null || true
+
+          nuclei -ut 2>/dev/null || true
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Build Xalgorix
+        run: |
+          cd xalgorix
+          go mod tidy
+          go build -buildvcs=false -o xalgorix ./cmd/xalgorix
+          chmod +x xalgorix
+          echo "✅ 编译完成"
+
+      - name: Run Scan
+        id: scan
+        run: |
+          TARGET="${{ matrix.target }}"
+          MAX_ITER="${{ github.event.inputs.max_iterations }}"
+          INSTRUCTION='${{ github.event.inputs.instruction }}'
+          JOB_IDX="${{ strategy.job-index }}"
+          TOTAL_JOBS="${{ strategy.job-total }}"
+
+          # 清理目标字符串
+          TARGET=$(echo "$TARGET" | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+          echo "========================================"
+          echo "  Job $((JOB_IDX + 1))/$TOTAL_JOBS: $TARGET"
+          echo "========================================"
+          echo ""
+          echo "🎯 目标:     $TARGET"
+          echo "🧠 模型:     ${{ github.event.inputs.model }}"
+          echo "🔁 迭代:     $MAX_ITER"
+          echo "🛡️ 安全模式: ${{ secrets.XALGORIX_GUARD_MODE || 'strict' }}"
+          [ -n "$INSTRUCTION" ] && echo "📝 自定义:   $INSTRUCTION"
+          echo ""
+
+          cd xalgorix
+          mkdir -p "scan-results/${JOB_IDX}"
+
+          # 构建参数
+          ARGS="--target $TARGET"
+          [ -n "$INSTRUCTION" ] && ARGS="$ARGS --instruction '$INSTRUCTION'"
+
+          # 执行扫描
+          timeout $((MAX_ITER * 2 + 300)) ./xalgorix $ARGS 2>&1 | tee "scan-results/${JOB_IDX}/scan.log" || EC=$?
+
+          echo ""
+          echo "========================================"
+          if [ "${EC:-0}" -eq 124 ] || [ "${EC:-0}" -eq 137 ]; then
+            echo "⏱️  扫描超时终止: $TARGET"
+          elif [ "${EC:-0}" -ne 0 ]; then
+            echo "⚠️  扫描异常退出 (code: ${EC:-?}): $TARGET"
+          else
+            echo "✅ 扫描完成: $TARGET"
+          fi
+          echo "========================================"
+
+      - name: Collect Results
+        if: always()
+        run: |
+          cd xalgorix
+          IDX="${{ strategy.job-index }}"
+          mkdir -p "scan-results/${IDX}/artifacts"
+
+          # 复制结果
+          find . -maxdepth 1 -name "*.html" -exec cp {} "scan-results/${IDX}/artifacts/" \; 2>/dev/null || true
+          find . -maxdepth 1 -name "*.json" -exec cp {} "scan-results/${IDX}/artifacts/" \; 2>/dev/null || true
+          find . -maxdepth 1 -name "*.md" -exec cp {} "scan-results/${IDX}/artifacts/" \; 2>/dev/null || true
+
+          # 清理大文件（避免 artifact 过大）
+          find "scan-results/${IDX}" -type f -size +50M -delete 2>/dev/null || true
+
+          echo "📦 收集完成"
+
+      - name: Upload Target Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-target-${{ strategy.job-index }}-${{ matrix.target }}
+          path: xalgorix/scan-results/${{ strategy.job-index }}/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ═══════════════════════════════════════════════════
+  # Job 3: 汇总通知（所有扫描完成后）
+  # ═══════════════════════════════════════════════════
+  notify:
+    name: '📊 汇总通知'
+    needs: [prepare, scan]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: DingTalk Summary
+        run: |
+          WEBHOOK="${{ secrets.DING_WEBHOOK }}"
+          SECRET="${{ secrets.DING_SECRET }}"
+
+          if [ -z "$WEBHOOK" ] || [ -z "$SECRET" ]; then
+            echo "⚠️  钉钉未配置，跳过通知"
+            exit 0
+          fi
+
+          TOTAL="${{ needs.prepare.outputs.total }}"
+          STATUS="${{ needs.scan.result }}"
+
+          if [ "$STATUS" = "success" ]; then
+            EMOJI="✅"; COLOR="#00CC66"; STATUS_TXT="全部成功"
+          elif [ "$STATUS" = "failure" ]; then
+            EMOJI="❌"; COLOR="#FF0000"; STATUS_TXT="部分失败"
+          else
+            EMOJI="⚠️"; COLOR="#FFAA00"; STATUS_TXT="有异常"
+          fi
+
+          TIMESTAMP=$(date +%s000)
+          STRING_TO_SIGN="${TIMESTAMP}\n${SECRET}"
+          SIGN=$(echo -n "$STRING_TO_SIGN" | openssl dgst -sha256 -hmac "$SECRET" -binary | base64 | tr -d '\n' | jq -sRr '@uri')
+
+          # 生成钉钉消息
+          cat > /tmp/ding-summary.json << PAYLOAD
+          {
+            "msgtype": "markdown",
+            "markdown": {
+              "title": "Xalgorix 批量扫描完成",
+              "text": "## 📊 Xalgorix AI 批量扫描完成\\n\\n---\\n\\n### 📋 扫描概要\\n\\n| 项目 | 详情 |\\n|------|------|\\n| **状态** | <font color=\"${COLOR}\">**${EMOJI} ${STATUS_TXT}**</font> |\\n| **总目标数** | ${TOTAL} 个 |\\n| **并行数** | ${{ github.event.inputs.parallel }} |\\n| **触发者** | ${{ github.actor }} |\\n| **完成时间** | $(date '+%Y-%m-%d %H:%M:%S') |\\n| **工作流** | [#${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |\\n\\n---\\n\\n> 📁 各目标扫描结果可在 **GitHub Actions Artifacts** 中下载查看。\\n> 🛡️ 所有扫描均受安全策略约束（12条规则）。\\n"
+            }
+          }
+          PAYLOAD
+
+          echo "📡 发送汇总通知到钉钉..."
+          curl -s "${WEBHOOK}&timestamp=${TIMESTAMP}&sign=${SIGN}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/ding-summary.json
+
+          echo ""
+          echo "✅ 汇总通知发送完成"
